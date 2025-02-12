@@ -565,7 +565,11 @@ def main(config: Optional[Dict[str, Any]] = None):
     # Target Configuration
     targets = configure_targets(df)
     
-    # Validate targets
+    # Add debug prints
+    st.write("DataFrame columns:", df.columns.tolist())
+    st.write("Target groupings:", list(targets.keys()))
+    
+    # Then validate
     try:
         validate_targets(df, targets)
     except ValueError as ve:
