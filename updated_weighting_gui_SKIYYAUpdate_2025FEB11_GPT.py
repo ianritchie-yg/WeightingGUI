@@ -723,57 +723,11 @@ def parse_target_csv(uploaded_file, use_percentages: bool = False) -> Dict:
 def get_weighting_params() -> Dict:
     """Collect weighting algorithm parameters from user"""
     st.sidebar.header("Algorithm Parameters")
+    
+    # Convergence Parameters
     threshold = st.sidebar.slider(
-        "Convergence Threshold (relative difference)",
+        "Convergence Threshold",
         min_value=0.0001, max_value=0.01, value=0.001, step=0.0001,
-        help="Lower values require closer matching to targets."
-    )
-    max_iter = st.sidebar.number_input(
-        "Maximum Iterations", min_value=1, value=50, step=1,
-        help="Maximum number of iterations before stopping."
-    )
-    min_weight = st.sidebar.number_input(
-        "Minimum Weight", min_value=0.0, value=0.1, step=0.1,
-        help="Weights will not go below this value."
-    )
-    max_weight = st.sidebar.number_input(
-        "Maximum Weight", min_value=0.0, value=5.0, step=0.1,
-        help="Weights will not exceed this value."
-    )
-    max_adj_factor = st.sidebar.number_input(
-        "Maximum Adjustment Factor", min_value=1.0, value=2.0, step=0.1,
-        help="Cap on the adjustment factor applied per iteration."
-    )
-    st.sidebar.header("Algorithm Parameters")
-    threshold = st.sidebar.slider(
-        "Convergence Threshold (relative difference)",
-        min_value=0.0001, max_value=0.01, value=0.001, step=0.0001,
-        help="Lower values require closer matching to targets."
-    )
-    max_iter = st.sidebar.number_input(
-        "Maximum Iterations", min_value=1, value=50, step=1,
-        help="Maximum number of iterations before stopping."
-    )
-    min_weight = st.sidebar.number_input(
-        "Minimum Weight", min_value=0.0, value=0.1, step=0.1,
-        help="Weights will not go below this value."
-    )
-    # For Maximum Weight
-    max_weight = st.sidebar.number_input(
-        "Maximum Weight",
-        min_value=0.0,
-        value=5.0,
-        step=0.1,
-        help="Weights will not exceed this value."
-    )
-
-    # For Convergence Threshold (relative difference)
-    convergence_threshold = st.sidebar.number_input(
-        "Convergence Threshold (relative difference)",
-        min_value=0.0001,
-        max_value=0.01,
-        value=0.001,
-        step=0.0001,
         help="Lower values require closer matching to targets."
     )
     
@@ -781,55 +735,73 @@ def get_weighting_params() -> Dict:
         "Maximum Iterations", min_value=1, value=50, step=1,
         help="Maximum number of iterations before stopping."
     )
+    
+    # Weight Bounds
     min_weight = st.sidebar.number_input(
         "Minimum Weight", min_value=0.0, value=0.1, step=0.1,
         help="Weights will not go below this value."
     )
+    
     max_weight = st.sidebar.number_input(
         "Maximum Weight", min_value=0.0, value=5.0, step=0.1,
         help="Weights will not exceed this value."
     )
+    
+    # Adjustment Parameters
     max_adj_factor = st.sidebar.number_input(
         "Maximum Adjustment Factor", min_value=1.0, value=2.0, step=0.1,
         help="Cap on the adjustment factor applied per iteration."
     )
+    
     smoothing_factor = st.sidebar.slider(
         "Smoothing/Dampening Factor", min_value=0.0, max_value=1.0, value=1.0, step=0.1,
         help="Factor to dampen adjustments (0 = no adjustment, 1 = full adjustment)."
     )
+    
+    # Strategy Parameters
     zero_cell_strategy = st.sidebar.selectbox(
         "Zero-Cell Handling Strategy", 
         options=["error", "impute", "skip"], index=0,
         help="How to handle cells with zero observed respondents but nonzero target."
     )
+    
     verbose = st.sidebar.checkbox("Enable Detailed Iteration Logs", value=False)
+    
     hist_bins = st.sidebar.number_input(
         "Number of Histogram Bins", min_value=10, value=50, step=1,
         help="Number of bins for weight distribution histograms."
     )
+    
     convergence_metric = st.sidebar.selectbox(
         "Convergence Metric", 
         options=["Max Relative Difference", "Chi-Square"], index=0,
         help="Metric used for evaluating convergence (only Max Relative Difference is implemented)."
     )
+    
     random_seed = st.sidebar.number_input(
         "Random Seed", min_value=0, value=42, step=1,
         help="Random seed for reproducibility."
     )
+    
     reporting_frequency = st.sidebar.number_input(
         "Reporting Frequency", min_value=1, value=1, step=1,
         help="How often to log iteration details (every nth iteration)."
     )
+    
     weighting_method = st.sidebar.selectbox(
         "Weighting Method", 
-        options=["Raking", "Geometric Mean", "Entropy"],  # Added Entropy option
+        options=["Raking", "Geometric Mean", "Entropy"],
         index=0,
         help="Choice of weighting algorithm (Raking = linear, Geometric = sqrt, Entropy = log)"
     )
-    compute_variance = st.sidebar.checkbox("Compute Variance Estimates", value=False, help="Compute variance of final weights.")
     
-    # Add trimming section
-    st.sidebar.subheader("Weight Trimming")
+    compute_variance = st.sidebar.checkbox(
+        "Compute Variance Estimates", 
+        value=False,
+        help="Compute variance of final weights."
+    )
+    
+    # Trimming Parameters
     enable_trimming = st.sidebar.checkbox(
         "Enable Weight Trimming",
         value=False,
