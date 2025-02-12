@@ -542,28 +542,7 @@ def export_table_to_excel(df: pd.DataFrame, filename: str = "diagnostics.xlsx"):
 # ---------------------- Streamlit Interface ----------------------
 # Modify main() to accept a config parameter
 def main(config: Optional[Dict[str, Any]] = None):
-    # If no config is provided, obtain default parameters.
-    if config is None:
-        config = get_weighting_params()
-    
-    st.title("📊 Survey Weighting Suite")
-    
-    # Data Upload Section
-    uploaded_file = st.sidebar.file_uploader("Upload survey data", type=["csv", "sav", "xls", "xlsx", "txt"])
-    if not uploaded_file:
-        st.info("Upload a CSV, SAV, XLS, XLSX, or TXT file to begin")
-        return
-    
-    # Data Processing
-    df = load_and_preprocess(uploaded_file)
-    
-    # Wave Column Logic
-    if 'wave_column' in df.columns:
-        df['wave_column'] = df['wave_column'].astype('category')
-        st.sidebar.info("Wave column detected and converted to category")
-    
-    # Target Configuration
-    targets = configure_targets(df)
+    // ...existing code...
     
     # Add debug prints
     st.write("DataFrame columns:", df.columns.tolist())
@@ -576,56 +555,7 @@ def main(config: Optional[Dict[str, Any]] = None):
         st.error(f"Target validation error: {ve}")
         return
     
-    # Weighting Parameters
-    params = get_weighting_params()
-    
-    # Warn if an unimplemented convergence metric was chosen
-    if params['convergence_metric'] != "Max Relative Difference":
-        st.warning("Chi-Square convergence metric not implemented; defaulting to Max Relative Difference.")
-    
-    # Run Engine with progress bar
-    if st.sidebar.button("Run Weighting Analysis"):
-        progress_bar = st.progress(0)
-        def progress_callback(current, total):
-            progress_bar.progress(current / total)
-        
-        with st.spinner("Running iterative weighting..."):
-            try:
-                engine = WeightingEngine(
-                    df, targets, config['min_weight'], config['max_weight'],
-                    max_adj_factor=config['max_adj_factor'],
-                    smoothing_factor=config['smoothing_factor'],
-                    zero_cell_strategy=config['zero_cell_strategy'],
-                    verbose=config['verbose'],
-                    reporting_frequency=config['reporting_frequency'],
-                    weighting_method=config['weighting_method'],
-                    random_seed=config['random_seed'],
-                    compute_variance=config['compute_variance'],
-                    trim_percentage=config['trim_percentage']
-                )
-                weights, convergence = engine.run(config['threshold'], config['max_iter'], progress_callback)
-            except ValueError as ve:
-                st.error(f"Value Error: {ve}")
-                return
-            except Exception as e:
-                st.error(f"An unexpected error occurred: {e}")
-                return
-        
-        show_results(df, weights, convergence, config['hist_bins'], config['compute_variance'], engine.trimming_stats)
-
-    # Session Saving
-    if st.button('Save Session'):
-        st.session_state['current_params'] = params
-
-    # Help Section
-    if st.sidebar.checkbox("Show Help", value=False):
-        st.sidebar.markdown("""
-        ### Survey Weighting Suite Help
-        - **Convergence Threshold:** Stopping criteria for the iterative process.
-        - **Missing Data Strategy:** Choose how to handle missing values.
-        - **Weighting Methods:** Options include Raking, Geometric Mean, Composite, etc.
-        - Additional details are available in the documentation.
-        """)
+    // ...existing code...
 
 def load_and_preprocess(uploaded_file) -> pd.DataFrame:
     """Handle data loading and preprocessing"""
@@ -665,11 +595,58 @@ def configure_targets(df: pd.DataFrame) -> Dict:
         help="Choose whether to input target values as counts or percentages"
     )
     
-    target_file = st.sidebar.file_uploader("Upload targets CSV", type=["csv"], key="target_csv")
-    if target_file:
-        return parse_target_csv(target_file, input_mode == "Percentages")
-    else:
-        return configure_interactive_targets(df, input_mode == "Percentages")
+    # Allow users to select or enter column headers
+    st.sidebar.markdown("### Select or Enter Column Headers")
+    columns = list(df.columns)
+    selected_groupings = st.sidebar.multiselect("Select grouping columns for targets", options=columns)
+    
+    if not selected_groupings:
+        st.sidebar.info("No grouping columns selected. Using default sample targets.")
+        return {
+            'gender': {'Male': 48.0, 'Female': 52.0} if input_mode == "Percentages" else {'Male': 480, 'Female': 520},
+            ('age_group',): {'18-24': 25.0, '25-34': 30.0, '35-44': 30.0, '45+': 15.0} if input_mode == "Percentages" 
+                           else {'18-24': 250, '25-34': 300, '35-44': 300, '45+': 150}
+        }
+    
+    targets = {}
+    total_sample = len(df)
+    
+    for col in selected_groupings:
+        st.sidebar.markdown(f"#### Targets for {col}")
+        unique_vals = sorted(df[col].dropna().unique())
+        target_dict = {}
+        running_total = 0
+        
+        for val in unique_vals:
+            if input_mode == "Percentages":
+                default_target = 100.0 / len(unique_vals)
+                target_val = st.sidebar.number_input(
+                    f"Target % for {val}", 
+                    min_value=0.0, 
+                    max_value=100.0,
+                    value=default_target,
+                    step=0.1,
+                    key=f"{col}_{val}_pct"
+                )
+                target_dict[val] = target_val
+                running_total += target_val
+            else:
+                target_val = st.sidebar.number_input(
+                    f"Target count for {val}", 
+                    min_value=0, 
+                    value=int(total_sample / len(unique_vals)),
+                    step=1,
+                    key=f"{col}_{val}_count"
+                )
+                target_dict[val] = target_val
+                running_total += target_val
+        
+        if input_mode == "Percentages" and abs(running_total - 100.0) > 0.01:
+            st.warning(f"⚠️ Percentages for {col} sum to {running_total:.1f}%. They should sum to 100%.")
+        
+        targets[col] = target_dict
+    
+    return targets
 
 def configure_interactive_targets(df: pd.DataFrame, use_percentages: bool = False) -> Dict:
     """Interactive target configuration UI with percentage support"""
