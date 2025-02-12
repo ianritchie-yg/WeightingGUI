@@ -41,15 +41,19 @@ def effective_sample_size(weights: pd.Series) -> float:
     """Calculate effective sample size"""
     return (weights.sum() ** 2) / (weights ** 2).sum()
 
-def plot_distribution_comparison(df: pd.DataFrame, col: str, original_weights: np.ndarray, adjusted_weights: np.ndarray):
+def plot_distribution_comparison(df: pd.DataFrame, col: str,
+                                 original_weights: np.ndarray,
+                                 adjusted_weights: np.ndarray):
     """Plot pre/post distribution comparison using Plotly"""
-    # Prepare two datasets: one with original uniform weights and one with adjusted weights.
+    # Prepare two datasets: one with original weights and one with adjusted weights.
     df_orig = df.copy()
     df_orig['Weight'] = original_weights
     df_orig['Dataset'] = 'Original'
+    
     df_adj = df.copy()
     df_adj['Weight'] = adjusted_weights
     df_adj['Dataset'] = 'Adjusted'
+    
     combined = pd.concat([df_orig, df_adj])
     
     fig = px.histogram(
@@ -58,6 +62,9 @@ def plot_distribution_comparison(df: pd.DataFrame, col: str, original_weights: n
         labels={col: col}, nbins=20
     )
     st.plotly_chart(fig, use_container_width=True)
+    
+    # Optionally, return the figure for further testing or manipulation
+    return fig
 
 # Add new trimming functions
 def trim_weights(weights: pd.Series, pct: float = 0.02) -> Tuple[pd.Series, Dict[str, float]]:
@@ -509,7 +516,12 @@ def export_table_to_excel(df: pd.DataFrame, filename: str = "diagnostics.xlsx"):
     st.download_button("Download Diagnostics Excel", data=open(filename, 'rb').read(), file_name=filename, mime='application/vnd.ms-excel')
 
 # ---------------------- Streamlit Interface ----------------------
-def main():
+# Modify main() to accept a config parameter
+def main(config: Optional[Dict[str, Any]] = None):
+    # If no config is provided, obtain default parameters.
+    if config is None:
+        config = get_weighting_params()
+    
     st.title("📊 Survey Weighting Suite")
     
     # Data Upload Section
@@ -552,18 +564,18 @@ def main():
         with st.spinner("Running iterative weighting..."):
             try:
                 engine = WeightingEngine(
-                    df, targets, params['min_weight'], params['max_weight'],
-                    max_adj_factor=params['max_adj_factor'],
-                    smoothing_factor=params['smoothing_factor'],
-                    zero_cell_strategy=params['zero_cell_strategy'],
-                    verbose=params['verbose'],
-                    reporting_frequency=params['reporting_frequency'],
-                    weighting_method=params['weighting_method'],
-                    random_seed=params['random_seed'],
-                    compute_variance=params['compute_variance'],
-                    trim_percentage=params['trim_percentage']  # Pass trimming parameter
+                    df, targets, config['min_weight'], config['max_weight'],
+                    max_adj_factor=config['max_adj_factor'],
+                    smoothing_factor=config['smoothing_factor'],
+                    zero_cell_strategy=config['zero_cell_strategy'],
+                    verbose=config['verbose'],
+                    reporting_frequency=config['reporting_frequency'],
+                    weighting_method=config['weighting_method'],
+                    random_seed=config['random_seed'],
+                    compute_variance=config['compute_variance'],
+                    trim_percentage=config['trim_percentage']
                 )
-                weights, convergence = engine.run(params['threshold'], params['max_iter'], progress_callback)
+                weights, convergence = engine.run(config['threshold'], config['max_iter'], progress_callback)
             except ValueError as ve:
                 st.error(f"Value Error: {ve}")
                 return
@@ -571,7 +583,7 @@ def main():
                 st.error(f"An unexpected error occurred: {e}")
                 return
         
-        show_results(df, weights, convergence, params['hist_bins'], params['compute_variance'], engine.trimming_stats)  # Pass trimming stats
+        show_results(df, weights, convergence, config['hist_bins'], config['compute_variance'], engine.trimming_stats)
 
     # Session Saving
     if st.button('Save Session'):
@@ -731,6 +743,7 @@ def get_weighting_params() -> Dict:
     max_adj_factor = st.sidebar.number_input(
         "Maximum Adjustment Factor", min_value=1.0, value=2.0, step=0.1,
         help="Cap on the adjustment factor applied per iteration."
+    )
     st.sidebar.header("Algorithm Parameters")
     threshold = st.sidebar.slider(
         "Convergence Threshold (relative difference)",
@@ -873,97 +886,5 @@ def export_data(df: pd.DataFrame):
 
 # ---------------------- Execution ----------------------
 if __name__ == "__main__":
-    main()
-    fig = px.histogram(weights_df, x="Weight", nbins=nbins, title="Weight Distribution")
-    st.plotly_chart(fig, use_container_width=True)
-
-def plot_convergence(convergence: list):
-    """Plot convergence of the algorithm"""
-    iterations = [x[0] for x in convergence]
-    rel_diffs = [x[1] for x in convergence]
-    fig = px.line(x=iterations, y=rel_diffs, labels={'x':'Iteration', 'y':'Max Relative Diff'}, title="Convergence Plot")
-    st.plotly_chart(fig, use_container_width=True)
-
-def export_data(df: pd.DataFrame):
-    """Provide an option to download the weighted data"""
-    csv = df.to_csv(index=False).encode('utf-8')
-    st.download_button("Download Weighted Data", data=csv, file_name="weighted_data.csv", mime="text/csv")
-
-# ---------------------- Execution ----------------------
-# ---------------------- Execution ----------------------
-if __name__ == "__main__":
-    config = {
-        'max_adj_factor': max_adj_factor,
-        'smoothing_factor': smoothing_factor,
-        'zero_cell_strategy': zero_cell_strategy,
-        'verbose': verbose,
-        'hist_bins': hist_bins,
-        'convergence_metric': convergence_metric,
-        'random_seed': random_seed,
-        'reporting_frequency': reporting_frequency,
-        'weighting_method': weighting_method,
-        'compute_variance': compute_variance,
-        'trim_percentage': trim_percentage,
-    }
+    config = get_weighting_params()
     main(config)
-
-def plot_weight_distribution(weights: pd.Series, nbins: int):
-    """Plot the distribution of the weights"""
-    weights_df = pd.DataFrame({'Weight': weights})
-    fig = px.histogram(weights_df, x="Weight", nbins=nbins, title="Weight Distribution")
-    st.plotly_chart(fig, use_container_width=True)
-
-def plot_convergence(convergence: list):
-    """Plot convergence of the algorithm"""
-    iterations = [x[0] for x in convergence]
-    rel_diffs = [x[1] for x in convergence]
-    fig = px.line(x=iterations, y=rel_diffs, labels={'x':'Iteration', 'y':'Max Relative Diff'}, title="Convergence Plot")
-    st.plotly_chart(fig, use_container_width=True)
-
-def export_data(df: pd.DataFrame):
-    """Provide an option to download the weighted data"""
-    csv = df.to_csv(index=False).encode('utf-8')
-    st.download_button("Download Weighted Data", data=csv, file_name="weighted_data.csv", mime="text/csv")
-
-# ---------------------- Execution ----------------------
-if __name__ == "__main__":
-    main()
-    fig = px.histogram(weights_df, x="Weight", nbins=nbins, title="Weight Distribution")
-    st.plotly_chart(fig, use_container_width=True)
-
-def plot_convergence(convergence: list):
-    """Plot convergence of the algorithm"""
-    iterations = [x[0] for x in convergence]
-    rel_diffs = [x[1] for x in convergence]
-    fig = px.line(x=iterations, y=rel_diffs, labels={'x':'Iteration', 'y':'Max Relative Diff'}, title="Convergence Plot")
-    st.plotly_chart(fig, use_container_width=True)
-
-def export_data(df: pd.DataFrame):
-    """Provide an option to download the weighted data"""
-    csv = df.to_csv(index=False).encode('utf-8')
-    st.download_button("Download Weighted Data", data=csv, file_name="weighted_data.csv", mime="text/csv")
-
-# ---------------------- Execution ----------------------
-if __name__ == "__main__":
-    main()
-    iterations = [x[0] for x in convergence]
-    rel_diffs = [x[1] for x in convergence]
-    fig = px.line(x=iterations, y=rel_diffs, labels={'x':'Iteration', 'y':'Max Relative Diff'}, title="Convergence Plot")
-    st.plotly_chart(fig, use_container_width=True)
-
-def export_data(df: pd.DataFrame):
-    """Provide an option to download the weighted data"""
-    csv = df.to_csv(index=False).encode('utf-8')
-    st.download_button("Download Weighted Data", data=csv, file_name="weighted_data.csv", mime="text/csv")
-
-# Add new function to validate targets
-def validate_targets(df: pd.DataFrame, targets: Dict):
-    """Validate that all target cells are present in the data"""
-    for grouping in targets:
-        for cell in targets[grouping]:
-            if cell not in df[grouping].values:
-                raise ValueError(f"Target cell {cell} not present in data for grouping {grouping}.")
-
-# ---------------------- Execution ----------------------
-if __name__ == "__main__":
-    main()
