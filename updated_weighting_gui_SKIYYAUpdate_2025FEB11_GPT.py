@@ -542,20 +542,45 @@ def export_table_to_excel(df: pd.DataFrame, filename: str = "diagnostics.xlsx"):
 # ---------------------- Streamlit Interface ----------------------
 # Modify main() to accept a config parameter
 def main(config: Optional[Dict[str, Any]] = None):
-    # ...existing code...
+    # Ensure config is set
+    if config is None:
+        config = get_weighting_params()
+
+    st.title("📊 Survey Weighting Suite")
+
+    # File upload should already exist in the script before this point
+    uploaded_file = st.sidebar.file_uploader("Upload survey data", type=["csv", "sav", "xls", "xlsx", "txt"])
+
+    if not uploaded_file:
+        st.info("Upload a file to begin")
+        return
+
+    # Ensure df is loaded properly from the uploaded file
+    df = load_and_preprocess(uploaded_file)
+
+    if df is None or df.empty:
+        st.error("No valid data found. Please upload a valid file.")
+        return
     
-    # Add debug prints
+    # Debugging outputs for verification
     st.write("DataFrame columns:", df.columns.tolist())
-    st.write("Target groupings:", list(targets.keys()))
+
+    # Ensure targets are set and valid
+    if 'targets' not in globals() or not isinstance(targets, dict) or not targets:
+        st.error("Target definitions are missing or invalid.")
+        return
     
-    # Then validate
+    st.write("Target groupings:", list(targets.keys()))
+
+    # Validate target structure against data
     try:
         validate_targets(df, targets)
+    except KeyError as ke:
+        st.error(f"Missing columns in the DataFrame: {ke}")
+        return
     except ValueError as ve:
         st.error(f"Target validation error: {ve}")
         return
-    
-    # ...existing code...
 
 def load_and_preprocess(uploaded_file) -> pd.DataFrame:
     """Handle data loading and preprocessing"""
