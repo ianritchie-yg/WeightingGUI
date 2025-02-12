@@ -1,4 +1,4 @@
-from typing import Any, Dict, Tuple, Callable, Union
+from typing import Any, Dict, Tuple, Callable, Union, Optional
 import pandas as pd
 import numpy as np
 import streamlit as st
@@ -6,8 +6,11 @@ import logging
 import plotly.express as px
 from functools import partial
 from io import StringIO
+from scipy.stats import chisquare, ks_2samp
+import importlib
 
 # Explanation of Key Updates
+	# 1.	Additional Algorithm Parameters:
 	# 1.	Additional Algorithm Parameters:
 	# •	max_adj_factor & smoothing_factor: These parameters control the magnitude and damping of weight adjustments in _adjust_weights.
 	# •	zero_cell_strategy: Specifies how to handle cells with zero observed respondents when a nonzero target is present (options: "error", "impute", "skip").
@@ -90,16 +93,53 @@ def trim_weights(weights: pd.Series, pct: float = 0.02) -> Tuple[pd.Series, Dict
         return weights, {'trimmed_count': 0, 'trim_threshold': float('inf')}
     
     upper_bound = weights.quantile(1 - pct)
-    trimmed = weights.clip(upper=upper_bound)
+    trimmed_weights = weights.clip(upper=upper_bound)
+
+    # Re-normalize trimmed weights to preserve weighted sum
+    trimmed_weights *= weights.sum() / trimmed_weights.sum()
     
     stats = {
         'trimmed_count': (weights > upper_bound).sum(),
         'trim_threshold': upper_bound,
         'max_weight_pre_trim': weights.max(),
-        'max_weight_post_trim': trimmed.max(),
+        'max_weight_post_trim': trimmed_weights.max(),
     }
     
-    return trimmed, stats
+    return trimmed_weights, stats
+
+def validate_targets(df: pd.DataFrame, targets: Dict):
+    """Validate that all target cells are present in the data"""
+    for grouping in targets:
+        for cell in targets[grouping]:
+            if cell not in df[grouping].values:
+                raise ValueError(f"Target cell {cell} not present in data for grouping {grouping}.")
+
+def impute_data(df: pd.DataFrame, method: str = 'mean') -> pd.DataFrame:
+    """Impute missing data in the DataFrame"""
+    if method == 'mean':
+        return df.fillna(df.mean())
+    elif method == 'median':
+        return df.fillna(df.median())
+    elif method == 'mode':
+        return df.fillna(df.mode().iloc[0])
+    else:
+        raise ValueError(f"Unknown imputation method: {method}")
+
+def load_plugin(plugin_name: str):
+    """Load a custom plugin"""
+    try:
+        plugin = importlib.import_module(plugin_name)
+        return plugin
+    except ImportError as e:
+        st.error(f"Error loading plugin {plugin_name}: {e}")
+        return None
+
+def apply_custom_plugin(weights: pd.Series, plugin_name: str) -> pd.Series:
+    """Apply a custom plugin to adjust weights"""
+    plugin = load_plugin(plugin_name)
+    if plugin and hasattr(plugin, 'custom_adjust_weights'):
+        return plugin.custom_adjust_weights(weights)
+    return weights
 
 # ---------------------- Enhanced Weighting Core ----------------------
 class WeightingEngine:
@@ -168,55 +208,56 @@ class WeightingEngine:
                     raise ValueError(f"Column '{col}' not found in data")
                 # Additional validations (e.g., ensuring targets are non-negative) can be added here.
 
-    
-def __init__(self, df: pd.DataFrame, targets: Dict, min_weight: float, max_weight: float, 
-             max_adj_factor: float = 2.0, smoothing_factor: float = 1.0, 
-             zero_cell_strategy: str = "error", verbose: bool = False, 
-             reporting_frequency: int = 1, weighting_method: str = "Raking",
-             hierarchical_levels: list = None, random_seed: int = 42,
-             compute_variance: bool = False) -> None:
-    ...
-    self.hierarchical_levels = hierarchical_levels if hierarchical_levels else list(targets.keys())
-
-def run(self, threshold: float = 0.001, max_iter: int = 50) -> Tuple[pd.Series, list]:
-    weights = pd.Series(np.ones(len(self.df)), index=self.df.index)
-    convergence_data = []
-
-    for level in self.hierarchical_levels:
-        for it in range(max_iter):
-            max_rel_diff, worst_group = self._evaluate_groups(weights, level)
-            if max_rel_diff <= threshold:
-                break
-            weights = self._adjust_weights(weights, level)
-
-    self.convergence_data = convergence_data
-    return weights, convergence_data
- threshold: float = 0.001, max_iter: int = 50, progress_callback: Callable[[int, int], None] = None) -> Tuple[pd.Series, list]:
-        """Enhanced iterative weighting algorithm with progress updates"""
+    def run(self, threshold: float = 0.001, max_iter: int = 50, progress_callback: Callable[[int, int], None] = None) -> Tuple[pd.Series, list]:
+        """Enhanced iterative weighting algorithm with dual convergence criteria"""
         weights = pd.Series(np.ones(len(self.df)), index=self.df.index)
+        prev_weights = weights.copy()
         convergence_data = []
         
         for it in range(max_iter):
             if progress_callback:
                 progress_callback(it + 1, max_iter)
-                
+            
+            # Store previous weights for stability check
+            prev_weights = weights.copy()
+            
             max_rel_diff, worst_group = self._evaluate_groups(weights)
-            convergence_data.append((it + 1, max_rel_diff))
+            weights = self._adjust_weights(weights, worst_group)
+            
+            # Calculate both convergence metrics
+            weight_stability = calculate_weight_stability(weights, prev_weights)
+            weight_stability_threshold = np.maximum(0.0005, threshold * weights.std())  # Dynamic threshold
+            
+            # Store convergence metrics
+            convergence_data.append({
+                'iteration': it + 1,
+                'max_rel_diff': max_rel_diff,
+                'weight_stability': weight_stability
+            })
             
             if self.verbose and ((it + 1) % self.reporting_frequency == 0):
-                logging.info(f"Iteration {it+1}: max relative difference = {max_rel_diff:.4f}")
+                logging.info(
+                    f"Iteration {it+1}: max diff = {max_rel_diff:.4f}, "
+                    f"weight stability = {weight_stability:.6f}"
+                )
             
-            if max_rel_diff <= threshold:
-                break
+            # Dual convergence criteria
+            if it > 10:  # Allow some initial iterations
+                target_met = max_rel_diff <= threshold
+                weights_stable = weight_stability <= weight_stability_threshold
                 
-            weights = self._adjust_weights(weights, worst_group)
+                if target_met and weights_stable:
+                    if self.verbose:
+                        logging.info("Convergence achieved: both targets and weights are stable")
+                    break
+            
+            if it == max_iter - 1 and self.verbose:
+                logging.warning("Maximum iterations reached without convergence")
         
         self.convergence_data = convergence_data
         
         if self.compute_variance:
             self.variance = weights.var()
-        else:
-            self.variance = None
         
         # Apply trimming before returning if enabled
         if self.trim_percentage > 0:
@@ -234,48 +275,7 @@ def run(self, threshold: float = 0.001, max_iter: int = 50) -> Tuple[pd.Series, 
         }
         return observed
 
-    
-def _adjust_weights(self, weights: pd.Series, grouping: Any) -> pd.Series:
-    group_indices = self.group_indices[grouping]
-    tdict = self.targets[grouping]
-    adjustment_factors = {}
-
-    for cell, target in tdict.items():
-        standardized_cell = standardize_cell_key(cell, grouping)
-        indices = group_indices.get(standardized_cell, [])
-        observed = weights.loc[indices].sum() if len(indices) > 0 else 0
-
-        if observed == 0:
-            if self.zero_cell_strategy == "error":
-                raise ValueError(f"Zero respondents in cell {standardized_cell} with nonzero target {target}.")
-            elif self.zero_cell_strategy == "impute":
-                observed = 1e-6
-            elif self.zero_cell_strategy == "skip":
-                adjustment_factors[standardized_cell] = 1.0
-                continue
-
-        raw_factor = target / observed
-
-        # Apply different aggregation methods
-        if self.weight_aggregation == "Geometric Mean":
-            new_factor = np.sqrt(target * observed)
-        elif self.weight_aggregation == "Harmonic Mean":
-            new_factor = 2 / ((1 / target) + (1 / observed))
-        else:  # Default is Multiplicative Mean (like raking)
-            new_factor = 1 + self.smoothing_factor * (raw_factor - 1)
-
-        if new_factor > self.max_adj_factor:
-            new_factor = self.max_adj_factor
-        adjustment_factors[standardized_cell] = new_factor
-
-    new_weights = weights.copy()
-    for cell, indices in group_indices.items():
-        standardized_cell = standardize_cell_key(cell, grouping)
-        factor = adjustment_factors.get(standardized_cell, 1.0)
-        new_weights.loc[indices] *= factor
-
-    return new_weights.clip(lower=self.min_weight, upper=self.max_weight)
- weights: pd.Series, grouping: Any) -> pd.Series:
+    def _adjust_weights(self, weights: pd.Series, grouping: Any) -> pd.Series:
         """Adjust weights for a particular grouping using additional parameters"""
         group_indices = self.group_indices[grouping]
         tdict = self.targets[grouping]
@@ -341,83 +341,79 @@ def calculate_weight_stability(weights: pd.Series, prev_weights: pd.Series) -> f
     """Calculate the mean absolute change in weights between iterations"""
     return np.abs(weights - prev_weights).mean()
 
-class WeightingEngine:
-    # ...existing code...
+def calculate_design_effect(weights: pd.Series, subgroup_col: Optional[str] = None) -> float:
+    """Calculate design effect, optionally stratified by a subgroup"""
+    if subgroup_col and subgroup_col in weights.index:
+        deffs = weights.groupby(subgroup_col).apply(lambda w: 1 + (w.std() / w.mean())**2)
+        return np.average(deffs, weights=weights.groupby(subgroup_col).count())  # Weighted average DEFF
+    return 1 + (weights.std() / weights.mean())**2
 
-    def run(self, threshold: float = 0.001, max_iter: int = 50, 
-            progress_callback: Callable[[int, int], None] = None) -> Tuple[pd.Series, list]:
-        """Enhanced iterative weighting algorithm with dual convergence criteria"""
-        weights = pd.Series(np.ones(len(self.df)), index=self.df.index)
-        prev_weights = weights.copy()
-        convergence_data = []
-        
-        for it in range(max_iter):
-            if progress_callback:
-                progress_callback(it + 1, max_iter)
-            
-            # Store previous weights for stability check
-            prev_weights = weights.copy()
-            
-            max_rel_diff, worst_group = self._evaluate_groups(weights)
-            weights = self._adjust_weights(weights, worst_group)
-            
-            # Calculate both convergence metrics
-            weight_stability = calculate_weight_stability(weights, prev_weights)
-            
-            # Store convergence metrics
-            convergence_data.append({
-                'iteration': it + 1,
-                'max_rel_diff': max_rel_diff,
-                'weight_stability': weight_stability
+def check_target_accuracy(df: pd.DataFrame, weights: pd.Series, targets: Dict) -> Tuple[pd.DataFrame, float, float]:
+    """Compare achieved vs target distributions and perform chi-square test"""
+    results = []
+    chi2_values = []
+
+    for grouping, target_dict in targets.items():
+        achieved = df.groupby(list(grouping))['weight'].sum()
+        total_weighted = achieved.sum()
+
+        for category, target in target_dict.items():
+            achieved_pct = (achieved.get(category, 0) / total_weighted) * 100
+            diff = achieved_pct - target
+            results.append({
+                "Category": category,
+                "Target %": target,
+                "Achieved %": achieved_pct,
+                "Difference": diff
             })
-            
-            if self.verbose and ((it + 1) % self.reporting_frequency == 0):
-                logging.info(
-                    f"Iteration {it+1}: max diff = {max_rel_diff:.4f}, "
-                    f"weight stability = {weight_stability:.6f}"
-                )
-            
-            # Dual convergence criteria
-            if it > 10:  # Allow some initial iterations
-                target_met = max_rel_diff <= threshold
-                weights_stable = weight_stability <= (threshold * weights.mean())
-                
-                if target_met and weights_stable:
-                    if self.verbose:
-                        logging.info("Convergence achieved: both targets and weights are stable")
-                    break
-            
-            if it == max_iter - 1 and self.verbose:
-                logging.warning("Maximum iterations reached without convergence")
-        
-        self.convergence_data = convergence_data
-        
-        if self.compute_variance:
-            self.variance = weights.var()
-        
-        return weights, convergence_data
+            chi2_values.append((achieved.get(category, 0), target / 100 * total_weighted))
 
-    def plot_convergence(self, convergence_data: list):
-        """Enhanced convergence visualization with dual metrics"""
-        df = pd.DataFrame(convergence_data)
-        
-        fig = make_subplots(rows=2, cols=1, 
-                           subplot_titles=('Target Differences', 'Weight Stability'))
-        
-        fig.add_trace(
-            go.Scatter(x=df['iteration'], y=df['max_rel_diff'],
-                      name='Max Relative Difference'),
-            row=1, col=1
-        )
-        
-        fig.add_trace(
-            go.Scatter(x=df['iteration'], y=df['weight_stability'],
-                      name='Weight Stability'),
-            row=2, col=1
-        )
-        
-        fig.update_layout(height=600, title_text="Convergence Diagnostics")
-        return fig
+    # Perform Chi-Square Goodness of Fit Test
+    observed, expected = zip(*chi2_values)
+    chi2_stat, p_value = chisquare(observed, expected)
+    
+    return pd.DataFrame(results), chi2_stat, p_value
+
+def compute_goodness_of_fit(observed: np.ndarray, expected: np.ndarray):
+    """Compute goodness-of-fit metrics"""
+    chi2_stat, chi2_p = chisquare(observed, expected)
+    ks_stat, ks_p = ks_2samp(observed, expected)
+    return {
+        'chi2_stat': chi2_stat,
+        'chi2_p': chi2_p,
+        'ks_stat': ks_stat,
+        'ks_p': ks_p
+    }
+
+def check_weight_instability(weights: pd.Series) -> bool:
+    """Check for weight instability based on coefficient of variation"""
+    cv = weights.std() / weights.mean()
+    threshold = 0.5  # Define an appropriate threshold for instability
+    return cv > threshold
+
+def analyze_weight_distribution(weights: pd.Series) -> Dict[str, float]:
+    """Analyze weight distribution statistics"""
+    return {
+        'mean': weights.mean(),
+        'median': weights.median(),
+        'std': weights.std(),
+        'min': weights.min(),
+        'max': weights.max(),
+        'skewness': weights.skew(),
+        'kurtosis': weights.kurtosis(),
+        'cv': weights.std() / weights.mean()
+    }
+
+def plot_weight_cdf(weights: pd.Series):
+    """Plot the cumulative distribution of weights"""
+    weights_sorted = np.sort(weights)
+    cdf = np.arange(1, len(weights)+1) / len(weights)
+    plt.figure()
+    plt.step(weights_sorted, cdf, where='post')
+    plt.title('Cumulative Distribution of Weights')
+    plt.xlabel('Weight')
+    plt.ylabel('CDF')
+    st.pyplot(plt.gcf())
 
 # Modify show_results to use enhanced convergence plotting
 def show_results(df: pd.DataFrame, weights: pd.Series, convergence: list, hist_bins: int, compute_variance: bool, trimming_stats: Optional[Dict] = None):
@@ -425,14 +421,14 @@ def show_results(df: pd.DataFrame, weights: pd.Series, convergence: list, hist_b
     st.header("Results Analysis")
     
     # Create tabs for different analysis aspects
-    tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
         "Weight Distribution", 
         "Convergence", 
         "Sample Efficiency",
         "Target Accuracy",
-        "Detailed Diagnostics"
+        "Detailed Diagnostics",
+        "Additional Visuals"
     ])
-    
     with tab1:
         plot_weight_distribution(weights, hist_bins)
         
@@ -473,7 +469,7 @@ def show_results(df: pd.DataFrame, weights: pd.Series, convergence: list, hist_b
     
     with tab4:
         st.write("### Target Accuracy")
-        accuracy_df = check_target_accuracy(df, weights, targets)
+        accuracy_df, chi2_stat, p_value = check_target_accuracy(df, weights, targets)
         st.dataframe(accuracy_df)
         
         # Visualize largest discrepancies
@@ -484,6 +480,9 @@ def show_results(df: pd.DataFrame, weights: pd.Series, convergence: list, hist_b
             title='Largest Target vs. Achieved Differences'
         )
         st.plotly_chart(fig)
+        
+        # Display chi-square test result
+        st.metric("Chi-Square Goodness of Fit", f"p = {p_value:.4f}", help="p < 0.05 suggests a mismatch between achieved and target.")
     
     with tab5:
         # Detailed weight statistics
@@ -511,6 +510,9 @@ def show_results(df: pd.DataFrame, weights: pd.Series, convergence: list, hist_b
             )
             st.plotly_chart(fig)
     
+    with tab6:
+        plot_weight_cdf(weights)
+    
     if compute_variance:
         st.subheader("Variance Estimates")
         st.write(f"Variance of weights: {np.var(weights):.4f}")
@@ -519,40 +521,10 @@ def show_results(df: pd.DataFrame, weights: pd.Series, convergence: list, hist_b
     # Export option
     export_data(df.assign(weight=weights))
 
-# Add new helper functions for diagnostics
-def calculate_design_effect(weights: pd.Series) -> float:
-    """Calculate design effect (1 + CV^2)"""
-    cv = weights.std() / weights.mean()
-    return 1 + (cv ** 2)
-
-def analyze_weight_distribution(weights: pd.Series) -> Dict[str, float]:
-    """Analyze weight distribution statistics"""
-    return {
-        'mean': weights.mean(),
-        'median': weights.median(),
-        'std': weights.std(),
-        'min': weights.min(),
-        'max': weights.max(),
-        'skewness': weights.skew(),
-        'kurtosis': weights.kurtosis(),
-        'cv': weights.std() / weights.mean()
-    }
-
-def check_target_accuracy(df: pd.DataFrame, weights: pd.Series, targets: Dict, tolerance: float = 0.01) -> pd.DataFrame:
-    """Compare achieved vs target distributions"""
-    results = []
-    for grouping, target_dict in targets.items():
-        achieved = df.groupby(list(grouping))['weight'].sum() / weights.sum() * 100
-        for category, target in target_dict.items():
-            results.append({
-                'Grouping': '+'.join(grouping) if isinstance(grouping, tuple) else grouping,
-                'Category': category,
-                'Target': target,
-                'Achieved': achieved[category],
-                'Difference': achieved[category] - target,
-                'Within_Tolerance': abs(achieved[category] - target) <= tolerance
-            })
-    return pd.DataFrame(results)
+def export_table_to_excel(df: pd.DataFrame, filename: str = "diagnostics.xlsx"):
+    """Export tables to Excel"""
+    df.to_excel(filename, index=False)
+    st.download_button("Download Diagnostics Excel", data=open(filename, 'rb').read(), file_name=filename, mime='application/vnd.ms-excel')
 
 # ---------------------- Streamlit Interface ----------------------
 def main():
@@ -575,6 +547,13 @@ def main():
     # Target Configuration
     targets = configure_targets(df)
     
+    # Validate targets
+    try:
+        validate_targets(df, targets)
+    except ValueError as ve:
+        st.error(f"Value Error: {ve}")
+        return
+    
     # Weighting Parameters
     params = get_weighting_params()
     
@@ -589,21 +568,42 @@ def main():
             progress_bar.progress(current / total)
         
         with st.spinner("Running iterative weighting..."):
-            engine = WeightingEngine(
-                df, targets, params['min_weight'], params['max_weight'],
-                max_adj_factor=params['max_adj_factor'],
-                smoothing_factor=params['smoothing_factor'],
-                zero_cell_strategy=params['zero_cell_strategy'],
-                verbose=params['verbose'],
-                reporting_frequency=params['reporting_frequency'],
-                weighting_method=params['weighting_method'],
-                random_seed=params['random_seed'],
-                compute_variance=params['compute_variance'],
-                trim_percentage=params['trim_percentage']  # Pass trimming parameter
-            )
-            weights, convergence = engine.run(params['threshold'], params['max_iter'], progress_callback)
+            try:
+                engine = WeightingEngine(
+                    df, targets, params['min_weight'], params['max_weight'],
+                    max_adj_factor=params['max_adj_factor'],
+                    smoothing_factor=params['smoothing_factor'],
+                    zero_cell_strategy=params['zero_cell_strategy'],
+                    verbose=params['verbose'],
+                    reporting_frequency=params['reporting_frequency'],
+                    weighting_method=params['weighting_method'],
+                    random_seed=params['random_seed'],
+                    compute_variance=params['compute_variance'],
+                    trim_percentage=params['trim_percentage']  # Pass trimming parameter
+                )
+                weights, convergence = engine.run(params['threshold'], params['max_iter'], progress_callback)
+            except ValueError as ve:
+                st.error(f"Value Error: {ve}")
+                return
+            except Exception as e:
+                st.error(f"An unexpected error occurred: {e}")
+                return
         
         show_results(df, weights, convergence, params['hist_bins'], params['compute_variance'], engine.trimming_stats)  # Pass trimming stats
+
+    # Session Saving
+    if st.button('Save Session'):
+        st.session_state['current_params'] = params
+
+    # Help Section
+    if st.sidebar.checkbox("Show Help", value=False):
+        st.sidebar.markdown("""
+        ### Survey Weighting Suite Help
+        - **Convergence Threshold:** Stopping criteria for the iterative process.
+        - **Missing Data Strategy:** Choose how to handle missing values.
+        - **Weighting Methods:** Options include Raking, Geometric Mean, Composite, etc.
+        - Additional details are available in the documentation.
+        """)
 
 def load_and_preprocess(uploaded_file) -> pd.DataFrame:
     """Handle data loading and preprocessing"""
@@ -682,20 +682,21 @@ def configure_interactive_targets(df: pd.DataFrame, use_percentages: bool = Fals
                     step=0.1,
                     key=f"{col}_{val}_pct"
                 )
-                running_total += target_val
                 target_dict[val] = target_val
+                running_total += target_val
             else:
-                default_target = int(total_sample / len(unique_vals))
                 target_val = st.sidebar.number_input(
-                    f"Target count for {val}",
-                    min_value=0,
-                    value=default_target,
-                    key=f"{col}_{val}"
+                    f"Target count for {val}", 
+                    min_value=0, 
+                    value=int(total_sample / len(unique_vals)),
+                    step=1,
+                    key=f"{col}_{val}_count"
                 )
                 target_dict[val] = target_val
+                running_total += target_val
         
         if use_percentages and abs(running_total - 100.0) > 0.01:
-            st.sidebar.warning(f"⚠️ Percentages for {col} sum to {running_total:.1f}%. They should sum to 100%.")
+            st.warning(f"⚠️ Percentages for {col} sum to {running_total:.1f}%. They should sum to 100%.")
         
         targets[col] = target_dict
     
@@ -729,6 +730,42 @@ def get_weighting_params() -> Dict:
     """Collect weighting algorithm parameters from user"""
     st.sidebar.header("Algorithm Parameters")
     threshold = st.sidebar.slider(
+        "Convergence Threshold (relative difference)",
+        min_value=0.0001, max_value=0.01, value=0.001, step=0.0001,
+        help="Lower values require closer matching to targets."
+    )
+    max_iter = st.sidebar.number_input(
+        "Maximum Iterations", min_value=1, value=50, step=1,
+        help="Maximum number of iterations before stopping."
+    )
+    min_weight = st.sidebar.number_input(
+        "Minimum Weight", min_value=0.0, value=0.1, step=0.1,
+        help="Weights will not go below this value."
+    )
+    max_weight = st.sidebar.number_input(
+        "Maximum Weight", min_value=0.0, value=5.0, step=0.1,
+        help="Weights will not exceed this value."
+    )
+    max_adj_factor = st.sidebar.number_input(
+        "Maximum Adjustment Factor", min_value=1.0, value=2.0, step=0.1,
+        help="Cap on the adjustment factor applied per iteration."
+    st.sidebar.header("Algorithm Parameters")
+    threshold = st.sidebar.slider(
+        "Convergence Threshold (relative difference)",
+        min_value=0.0001, max_value=0.01, value=0.001, step=0.0001,
+        help="Lower values require closer matching to targets."
+    )
+    max_iter = st.sidebar.number_input(
+        "Maximum Iterations", min_value=1, value=50, step=1,
+        help="Maximum number of iterations before stopping."
+    )
+    min_weight = st.sidebar.number_input(
+        "Minimum Weight", min_value=0.0, value=0.1, step=0.1,
+        help="Weights will not go below this value."
+    )
+    max_weight = st.sidebar.number_input(
+        "Maximum Weight", min_value=0.0, value=5.0, step=0.1,
+        help="Weights will not exceed this value."
         "Convergence Threshold (relative difference)",
         min_value=0.0001, max_value=0.01, value=0.001, step=0.0001,
         help="Lower values require closer matching to targets."
@@ -826,6 +863,7 @@ def plot_weight_distribution(weights: pd.Series, nbins: int):
     weights_df = pd.DataFrame({'Weight': weights})
     fig = px.histogram(weights_df, x="Weight", nbins=nbins, title="Weight Distribution")
     st.plotly_chart(fig, use_container_width=True)
+    """Plot convergence of the algorithm"""
 
 def plot_convergence(convergence: list):
     """Plot convergence of the algorithm"""
@@ -838,6 +876,98 @@ def export_data(df: pd.DataFrame):
     """Provide an option to download the weighted data"""
     csv = df.to_csv(index=False).encode('utf-8')
     st.download_button("Download Weighted Data", data=csv, file_name="weighted_data.csv", mime="text/csv")
+
+# ---------------------- Execution ----------------------
+if __name__ == "__main__":
+    main()
+    fig = px.histogram(weights_df, x="Weight", nbins=nbins, title="Weight Distribution")
+    st.plotly_chart(fig, use_container_width=True)
+
+def plot_convergence(convergence: list):
+    """Plot convergence of the algorithm"""
+    iterations = [x[0] for x in convergence]
+    rel_diffs = [x[1] for x in convergence]
+    fig = px.line(x=iterations, y=rel_diffs, labels={'x':'Iteration', 'y':'Max Relative Diff'}, title="Convergence Plot")
+    st.plotly_chart(fig, use_container_width=True)
+
+def export_data(df: pd.DataFrame):
+    """Provide an option to download the weighted data"""
+    csv = df.to_csv(index=False).encode('utf-8')
+    st.download_button("Download Weighted Data", data=csv, file_name="weighted_data.csv", mime="text/csv")
+
+# ---------------------- Execution ----------------------
+if __name__ == "__main__":
+    main()
+    main()
+        'max_adj_factor': max_adj_factor,
+        'smoothing_factor': smoothing_factor,
+        'zero_cell_strategy': zero_cell_strategy,
+        'verbose': verbose,
+        'hist_bins': hist_bins,
+        'convergence_metric': convergence_metric,
+        'random_seed': random_seed,
+        'reporting_frequency': reporting_frequency,
+        'weighting_method': weighting_method,
+        'compute_variance': compute_variance,
+        'trim_percentage': trim_percentage,
+    }
+
+def plot_weight_distribution(weights: pd.Series, nbins: int):
+    """Plot the distribution of the weights"""
+    weights_df = pd.DataFrame({'Weight': weights})
+    fig = px.histogram(weights_df, x="Weight", nbins=nbins, title="Weight Distribution")
+    st.plotly_chart(fig, use_container_width=True)
+
+def plot_convergence(convergence: list):
+    """Plot convergence of the algorithm"""
+    iterations = [x[0] for x in convergence]
+    rel_diffs = [x[1] for x in convergence]
+    fig = px.line(x=iterations, y=rel_diffs, labels={'x':'Iteration', 'y':'Max Relative Diff'}, title="Convergence Plot")
+    st.plotly_chart(fig, use_container_width=True)
+
+def export_data(df: pd.DataFrame):
+    """Provide an option to download the weighted data"""
+    csv = df.to_csv(index=False).encode('utf-8')
+    st.download_button("Download Weighted Data", data=csv, file_name="weighted_data.csv", mime="text/csv")
+
+# ---------------------- Execution ----------------------
+if __name__ == "__main__":
+    main()
+    fig = px.histogram(weights_df, x="Weight", nbins=nbins, title="Weight Distribution")
+    st.plotly_chart(fig, use_container_width=True)
+
+def plot_convergence(convergence: list):
+    """Plot convergence of the algorithm"""
+    iterations = [x[0] for x in convergence]
+    rel_diffs = [x[1] for x in convergence]
+    fig = px.line(x=iterations, y=rel_diffs, labels={'x':'Iteration', 'y':'Max Relative Diff'}, title="Convergence Plot")
+    st.plotly_chart(fig, use_container_width=True)
+
+def export_data(df: pd.DataFrame):
+    """Provide an option to download the weighted data"""
+    csv = df.to_csv(index=False).encode('utf-8')
+    st.download_button("Download Weighted Data", data=csv, file_name="weighted_data.csv", mime="text/csv")
+
+# ---------------------- Execution ----------------------
+if __name__ == "__main__":
+    main()
+    iterations = [x[0] for x in convergence]
+    rel_diffs = [x[1] for x in convergence]
+    fig = px.line(x=iterations, y=rel_diffs, labels={'x':'Iteration', 'y':'Max Relative Diff'}, title="Convergence Plot")
+    st.plotly_chart(fig, use_container_width=True)
+
+def export_data(df: pd.DataFrame):
+    """Provide an option to download the weighted data"""
+    csv = df.to_csv(index=False).encode('utf-8')
+    st.download_button("Download Weighted Data", data=csv, file_name="weighted_data.csv", mime="text/csv")
+
+# Add new function to validate targets
+def validate_targets(df: pd.DataFrame, targets: Dict):
+    """Validate that all target cells are present in the data"""
+    for grouping in targets:
+        for cell in targets[grouping]:
+            if cell not in df[grouping].values:
+                raise ValueError(f"Target cell {cell} not present in data for grouping {grouping}.")
 
 # ---------------------- Execution ----------------------
 if __name__ == "__main__":
