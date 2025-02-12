@@ -542,7 +542,7 @@ def export_table_to_excel(df: pd.DataFrame, filename: str = "diagnostics.xlsx"):
 # ---------------------- Streamlit Interface ----------------------
 # Modify main() to accept a config parameter
 def main(config: Optional[Dict[str, Any]] = None):
-    // ...existing code...
+    # ...existing code...
     
     # Add debug prints
     st.write("DataFrame columns:", df.columns.tolist())
@@ -555,7 +555,7 @@ def main(config: Optional[Dict[str, Any]] = None):
         st.error(f"Target validation error: {ve}")
         return
     
-    // ...existing code...
+    # ...existing code...
 
 def load_and_preprocess(uploaded_file) -> pd.DataFrame:
     """Handle data loading and preprocessing"""
