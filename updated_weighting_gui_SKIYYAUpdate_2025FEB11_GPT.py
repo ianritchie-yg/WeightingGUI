@@ -98,10 +98,34 @@ def trim_weights(weights: pd.Series, pct: float = 0.02) -> Tuple[pd.Series, Dict
 
 def validate_targets(df: pd.DataFrame, targets: Dict):
     """Validate that all target cells are present in the data"""
-    for grouping in targets:
-        for cell in targets[grouping]:
-            if cell not in df[grouping].values:
-                raise ValueError(f"Target cell {cell} not present in data for grouping {grouping}.")
+    if not targets:
+        raise ValueError("No targets provided")
+        
+    for grouping, target_dict in targets.items():
+        # Convert single string to tuple if necessary
+        if isinstance(grouping, str):
+            grouping = (grouping,)
+            
+        # Check if all columns in grouping exist in dataframe
+        missing_cols = [col for col in grouping if col not in df.columns]
+        if missing_cols:
+            raise ValueError(f"Columns {missing_cols} not found in dataframe")
+            
+        # For single column grouping
+        if len(grouping) == 1:
+            unique_values = set(df[grouping[0]].dropna().unique())
+        # For multiple column grouping
+        else:
+            unique_values = set(tuple(row) for row in df[list(grouping)].dropna().itertuples(index=False))
+            
+        # Check if all target cells exist in data
+        for cell in target_dict:
+            if isinstance(cell, tuple):
+                if cell not in unique_values:
+                    raise ValueError(f"Target cell {cell} not present in data for grouping {grouping}")
+            else:
+                if cell not in unique_values:
+                    raise ValueError(f"Target cell {cell} not present in data for grouping {grouping[0]}")
 
 def impute_data(df: pd.DataFrame, method: str = 'mean') -> pd.DataFrame:
     """Impute missing data in the DataFrame"""
@@ -545,7 +569,7 @@ def main(config: Optional[Dict[str, Any]] = None):
     try:
         validate_targets(df, targets)
     except ValueError as ve:
-        st.error(f"Value Error: {ve}")
+        st.error(f"Target validation error: {ve}")
         return
     
     # Weighting Parameters
