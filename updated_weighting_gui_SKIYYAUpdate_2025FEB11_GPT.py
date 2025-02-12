@@ -548,14 +548,14 @@ def main(config: Optional[Dict[str, Any]] = None):
 
     st.title("📊 Survey Weighting Suite")
 
-    # File upload should already exist in the script before this point
+    # File upload
     uploaded_file = st.sidebar.file_uploader("Upload survey data", type=["csv", "sav", "xls", "xlsx", "txt"])
 
     if not uploaded_file:
         st.info("Upload a file to begin")
         return
 
-    # Ensure df is loaded properly from the uploaded file
+    # Load and preprocess data
     df = load_and_preprocess(uploaded_file)
 
     if df is None or df.empty:
@@ -565,9 +565,11 @@ def main(config: Optional[Dict[str, Any]] = None):
     # Debugging outputs for verification
     st.write("DataFrame columns:", df.columns.tolist())
 
-    # Ensure targets are set and valid
-    if 'targets' not in globals() or not isinstance(targets, dict) or not targets:
-        st.error("Target definitions are missing or invalid.")
+    # Configure targets using the configure_targets function
+    targets = configure_targets(df)
+
+    if not targets:
+        st.error("No targets configured. Please set up target values.")
         return
     
     st.write("Target groupings:", list(targets.keys()))
@@ -575,6 +577,40 @@ def main(config: Optional[Dict[str, Any]] = None):
     # Validate target structure against data
     try:
         validate_targets(df, targets)
+        
+        # Initialize WeightingEngine with validated targets
+        engine = WeightingEngine(
+            df=df,
+            targets=targets,
+            min_weight=config['min_weight'],
+            max_weight=config['max_weight'],
+            max_adj_factor=config['max_adj_factor'],
+            smoothing_factor=config['smoothing_factor'],
+            zero_cell_strategy=config['zero_cell_strategy'],
+            verbose=config['verbose'],
+            reporting_frequency=config['reporting_frequency'],
+            weighting_method=config['weighting_method'],
+            random_seed=config['random_seed'],
+            compute_variance=config['compute_variance'],
+            trim_percentage=config['trim_percentage']
+        )
+        
+        # Run the weighting process
+        weights, convergence = engine.run(
+            threshold=config['threshold'],
+            max_iter=config['max_iter']
+        )
+        
+        # Show results
+        show_results(
+            df=df,
+            weights=weights,
+            convergence=convergence,
+            hist_bins=config['hist_bins'],
+            compute_variance=config['compute_variance'],
+            trimming_stats=engine.trimming_stats if hasattr(engine, 'trimming_stats') else None
+        )
+        
     except KeyError as ke:
         st.error(f"Missing columns in the DataFrame: {ke}")
         return
