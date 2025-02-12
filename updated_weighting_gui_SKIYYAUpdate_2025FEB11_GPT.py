@@ -9,24 +9,6 @@ from io import StringIO
 from scipy.stats import chisquare, ks_2samp
 import importlib
 
-# Explanation of Key Updates
-	# 1.	Additional Algorithm Parameters:
-	# 1.	Additional Algorithm Parameters:
-	# •	max_adj_factor & smoothing_factor: These parameters control the magnitude and damping of weight adjustments in _adjust_weights.
-	# •	zero_cell_strategy: Specifies how to handle cells with zero observed respondents when a nonzero target is present (options: "error", "impute", "skip").
-	# •	verbose & reporting_frequency: Control detailed iteration logging.
-	# •	weighting_method: Provides a (currently nominal) option to select different weighting approaches.
-	# •	random_seed: Ensures reproducibility.
-	# •	compute_variance: Toggles variance estimation on the final weights.
-	# 2.	GUI Enhancements:
-	# •	The get_weighting_params function now collects these additional parameters via Streamlit’s sidebar controls.
-	# •	A new parameter for histogram bin count (hist_bins) has been added and used in the weight distribution plot.
-	# 3.	Algorithm Modifications:
-	# •	In _adjust_weights, the computed adjustment factor is modified by the smoothing factor and capped by the maximum adjustment factor.
-	# •	The code now checks the zero_cell_strategy and handles zero-observed cells accordingly.
-	# •	Verbose logging and reporting frequency are used in the run loop to provide detailed iteration feedback.
-	# 4.	Variance Estimation:
-	# •	If compute_variance is enabled, the variance of the final weights is calculated and displayed in the results.
 
 # ---------------------- Configuration ----------------------
 st.set_page_config(page_title="Survey Weighting Suite", layout="wide")
@@ -763,13 +745,25 @@ def get_weighting_params() -> Dict:
         "Minimum Weight", min_value=0.0, value=0.1, step=0.1,
         help="Weights will not go below this value."
     )
+    # For Maximum Weight
     max_weight = st.sidebar.number_input(
-        "Maximum Weight", min_value=0.0, value=5.0, step=0.1,
+        "Maximum Weight",
+        min_value=0.0,
+        value=5.0,
+        step=0.1,
         help="Weights will not exceed this value."
+    )
+
+    # For Convergence Threshold (relative difference)
+    convergence_threshold = st.sidebar.number_input(
         "Convergence Threshold (relative difference)",
-        min_value=0.0001, max_value=0.01, value=0.001, step=0.0001,
+        min_value=0.0001,
+        max_value=0.01,
+        value=0.001,
+        step=0.0001,
         help="Lower values require closer matching to targets."
     )
+    
     max_iter = st.sidebar.number_input(
         "Maximum Iterations", min_value=1, value=50, step=1,
         help="Maximum number of iterations before stopping."
@@ -896,9 +890,9 @@ def export_data(df: pd.DataFrame):
     st.download_button("Download Weighted Data", data=csv, file_name="weighted_data.csv", mime="text/csv")
 
 # ---------------------- Execution ----------------------
+# ---------------------- Execution ----------------------
 if __name__ == "__main__":
-    main()
-    main()
+    config = {
         'max_adj_factor': max_adj_factor,
         'smoothing_factor': smoothing_factor,
         'zero_cell_strategy': zero_cell_strategy,
@@ -911,6 +905,7 @@ if __name__ == "__main__":
         'compute_variance': compute_variance,
         'trim_percentage': trim_percentage,
     }
+    main(config)
 
 def plot_weight_distribution(weights: pd.Series, nbins: int):
     """Plot the distribution of the weights"""
