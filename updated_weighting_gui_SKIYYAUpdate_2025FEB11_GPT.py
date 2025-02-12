@@ -592,21 +592,13 @@ def load_and_preprocess(uploaded_file) -> pd.DataFrame:
         import pyreadstat
         df, meta = pyreadstat.read_sav(uploaded_file)
     elif file_extension in ['xls', 'xlsx']:
-        df = pd.read_excel(uploaded_file)
+        df = pd.read_excel(uploaded_file, engine="openpyxl")  # ✅ Explicitly specify engine
     elif file_extension == 'txt':
         df = pd.read_csv(uploaded_file, delimiter='\t')
     else:
         st.error("Unsupported file format")
         return pd.DataFrame()
     
-    st.sidebar.markdown("### Select Categorical Columns")
-    cat_cols = st.sidebar.multiselect(
-        "Choose categorical columns", 
-        options=df.columns,
-        default=[]  # Start with no preselected columns
-    )
-    for col in cat_cols:
-        df[col] = df[col].astype('category')
     return df
 
 def configure_targets(df: pd.DataFrame) -> Dict:
